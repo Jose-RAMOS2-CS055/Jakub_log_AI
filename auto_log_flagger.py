@@ -1,0 +1,176 @@
+import socket
+import rrcf
+import numpy as np
+from drain3 import TemplateMiner
+from drain3.template_miner_config import TemplateMinerConfig
+from collections import deque
+import threading
+from queue import Queue
+import sys
+sys.setrecursionlimit(10000) # Increases the limit from the default 1000
+
+# ==========================================
+# 1. SYSTEM CONFIGURATION
+# ==========================================
+HOST = '0.0.0.0'       # Listen on all network interfaces
+PORT = 1010            # The port you requested
+SHINGLE_SIZE = 4       # How many logs to look at in a sequence
+TREE_SIZE = 3000        # How many points the RRCF remembers (sliding window for drift)
+NUM_TREES = 20         # Number of trees in the forest (utilizes your CPU cores)
+THRESHOLD = 95         # Anomaly score threshold (tune this over time)
+ALERTING_ENABLED = False
+
+# ==========================================
+
+# 2. INITIALIZE DRAIN3 & RRCF
+# ==========================================
+# Setup Drain3 (Parser)
+config = TemplateMinerConfig()
+config.load("") # Loads default configurations
+template_miner = TemplateMiner(config=config)
+
+# Setup RRCF (Anomaly Engine)
+forest = []
+for _ in range(NUM_TREES):
+    tree = rrcf.RCTree()
+    forest.append(tree)
+
+# State trackers for the sliding windows
+shingle_deque = deque(maxlen=SHINGLE_SIZE)
+point_index = 0
+total_lines_processed = 0
+
+print(f"[*] Starting Anomaly Detection Engine...")
+print(f"[*] Listening for TCP log streams on port {PORT}...")
+
+# ==========================================
+# 3. THE REAL-TIME LISTENER & PROCESSOR
+# ==========================================
+def process_log_line(log_line):
+    global point_index, total_lines_processed
+    
+    # Increment and display the total number of lines processed
+    total_lines_processed += 1
+    print(f"[*] Lines Processed: {total_lines_processed}", end='\r')
+    
+    # --- A. Parse the Log ---
+    result = template_miner.add_log_message(log_line.strip())
+    event_id = result["cluster_id"] 
+    
+    # --- B. Vectorize (Create a Shingle) ---
+    # We group the last N events together to catch sequential anomalies
+    shingle_deque.append(event_id)
+    if len(shingle_deque) < SHINGLE_SIZE:
+        return # Wait until we have enough logs to form a pattern
+    
+    # Convert sequence to a numeric point for the RRCF model
+    point = np.array(shingle_deque, dtype=float)
+
+    # --- C. Score & Update the RRCF Trees ---
+    avg_codisp = 0
+    for tree in forest:
+        # 1. If the tree is full, "forget" the oldest point to handle concept drift over months
+        if len(tree.leaves) > TREE_SIZE:
+            oldest_index = point_index - TREE_SIZE
+            tree.forget_point(oldest_index)
+            
+        # 2. Insert the new log sequence into the tree
+        tree.insert_point(point, index=point_index)
+        
+        # 3. Calculate the "Collusive Displacement" (Anomaly Score)
+        avg_codisp += tree.codisp(point_index)
+        
+    avg_codisp /= NUM_TREES
+    point_index += 1
+
+    # --- D. Alerting ---
+    # Only alert if the score is high AND the log is NOT an INFO log
+    if ALERTING_ENABLED and avg_codisp > THRESHOLD:
+        if "INFO" not in log_line:
+            print(f"\n[!!!] ANOMALY DETECTED [!!!]")
+            print(f"Score: {avg_codisp:.2f}")
+            print(f"Log: {log_line.strip()}")
+            print(f"Pattern Template: {result['template_mined']}\n")
+
+# ==========================================
+# PHASE 1: WARM-UP (Limited to 10,000 lines)
+# ==========================================
+HISTORICAL_FILE = r"examples\REN-SWEET400-a8n.log" # Make sure this matches your file name
+MAX_WARMUP_LINES = 3000
+
+print(f"[*] Starting Phase 1: Warming up model with the first {MAX_WARMUP_LINES} lines from {HISTORICAL_FILE}...")
+
+try:
+    with open(HISTORICAL_FILE, 'r', encoding='utf-8') as f:
+        line_count = 0
+        for line in f:
+            if line.strip():
+                process_log_line(line)
+                line_count += 1
+            
+            # Stop reading once we hit the limit
+            if line_count >= MAX_WARMUP_LINES:
+                break
+                
+    print(f"[*] Warm-up complete! Successfully processed {line_count} lines.")
+except FileNotFoundError:
+    print(f"[!] Historical file not found. Skipping warm-up.")
+
+# ==========================================
+# LIVE STREAMING PHASE
+# ==========================================
+ALERTING_ENABLED = True # Turn on the alarms!
+log_queue = Queue()
+
+def client_handler(conn, addr):
+    """Handles an individual client connection, putting logs into a queue."""
+    print(f"\n[*] Connection established from {addr}")
+    with conn:
+        buffer = ""
+        while True:
+            try:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                
+                # Handle incoming stream and split by newlines
+                buffer += data.decode('utf-8', errors='ignore')
+                while '\n' in buffer:
+                    line, buffer = buffer.split('\n', 1)
+                    if line:
+                        log_queue.put(line)
+            except ConnectionResetError:
+                break # Client disconnected abruptly
+    print(f"[*] Connection closed from {addr}")
+
+def log_processor_worker():
+    """Worker thread to process logs from the queue."""
+    while True:
+        line = log_queue.get() # This will block until a log is available
+        if line is None: # Sentinel value received, exiting thread.
+            break
+        process_log_line(line)
+        log_queue.task_done()
+
+print(f"[*] Starting Phase 2: Listening for live TCP streams on port {PORT}...")
+
+try:
+    # Start the dedicated log processing thread
+    processor_thread = threading.Thread(target=log_processor_worker, daemon=True)
+    processor_thread.start()
+    
+    # Setup the TCP Socket Server
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        # Allow port reuse so it doesn't crash if you restart the script quickly
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) 
+        s.bind((HOST, PORT))
+        s.listen()
+        while True:
+            conn, addr = s.accept()
+            # For each new connection, start a new thread to handle it
+            client_thread = threading.Thread(target=client_handler, args=(conn, addr), daemon=True)
+            client_thread.start()
+except KeyboardInterrupt:
+    print("\n[*] Shutdown signal received. Cleaning up...")
+    log_queue.put(None) # Signal the processor thread to exit
+    processor_thread.join() # Wait for the processor thread to finish gracefully
