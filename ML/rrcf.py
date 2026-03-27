@@ -1,27 +1,70 @@
 import rrcf
 import numpy as np
 from collections import deque
-from queue import Queue
+import multiprocessing as mp
 import sys
-sys.setrecursionlimit(3000) # Increases the limit from the default 1000
+import time
 
-SHINGLE_SIZE = 4       # How many logs to look at in a sequence
-TREE_SIZE = 3000        # How many points the RRCF remembers (sliding window for drift)
-NUM_TREES = 75         # Number of trees in the forest (utilizes your CPU cores)
-THRESHOLD = 95         # Anomaly score threshold (tune this over time)
+sys.setrecursionlimit(3000) 
 
+# ==========================================
+# CONFIGURATION
+# ==========================================
+SHINGLE_SIZE = 4       
+TREE_SIZE = 10000      # Bumped to 50,000 to remember weekly patterns
+NUM_TREES = 75         
+THRESHOLD = 95         
+CORES_TO_USE = 18       # Number of background CPU cores to use
+
+# ==========================================
+# 1. THE MULTIPROCESSING WORKER
+# ==========================================
+# MUST be outside the class so it can be sent to other CPU cores
+def rrcf_worker(log_queue, result_queue, num_trees, tree_size):
+    local_forest = [rrcf.RCTree() for _ in range(num_trees)]
+    point_index = 0
+    
+    while True:
+        point = log_queue.get()
+        if point is None: # Poison pill to shut down
+            break
+            
+        local_codisp = 0
+        for tree in local_forest:
+            if len(tree.leaves) > tree_size:
+                tree.forget_point(point_index - tree_size)
+                
+            tree.insert_point(point, index=point_index)
+            local_codisp += tree.codisp(point_index)
+            
+        result_queue.put(local_codisp / num_trees)
+        point_index += 1
+
+# ==========================================
+# 2. YOUR REFACTORED CLASS
+# ==========================================
 class rrcf_model:
     def __init__(self):
-        self.forest = []
-        for _ in range(NUM_TREES):
-            tree = rrcf.RCTree()
-            self.forest.append(tree)
+        self.trees_per_core = NUM_TREES // CORES_TO_USE
+        
+        # IPC Queues
+        self.log_queues = [mp.Queue() for _ in range(CORES_TO_USE)]
+        self.result_queues = [mp.Queue() for _ in range(CORES_TO_USE)]
+        
+        # Spin up background workers
+        self.workers = []
+        for i in range(CORES_TO_USE):
+            p = mp.Process(
+                target=rrcf_worker, 
+                args=(self.log_queues[i], self.result_queues[i], self.trees_per_core, TREE_SIZE)
+            )
+            p.start()
+            self.workers.append(p)
             
         self.shingle_deque = deque(maxlen=SHINGLE_SIZE)
-        self.point_index = 0
         self.total_lines_processed = 0
-        self.llm_analysis_queue = Queue()
         self.alert = False
+        self.time_start = time.time()
         
     def set_alert(self, alert):
         self.alert = alert
@@ -29,34 +72,33 @@ class rrcf_model:
     def calculate_anomaly(self, log_line, result, event_id, recent_logs_deque):
         self.shingle_deque.append(event_id)
         if len(self.shingle_deque) < SHINGLE_SIZE:
-            return # Wait until we have enough logs to form a pattern
+            return None 
         
-        # Convert sequence to a numeric point for the RRCF model
+        # --- THE JITTER FIX ---
         point = np.array(self.shingle_deque, dtype=float)
+        point = point + np.random.uniform(low=-1e-5, high=1e-5, size=point.shape)
 
-        # --- Score & Update the RRCF Trees ---
-        avg_codisp = 0
-        for tree in self.forest:
-            # 1. If the tree is full, "forget" the oldest point to handle concept drift over months
-            if len(tree.leaves) > TREE_SIZE:
-                oldest_index = self.point_index - TREE_SIZE
-                tree.forget_point(oldest_index)
-                
-            # 2. Insert the new log sequence into the tree
-            tree.insert_point(point, index=self.point_index)
-            
-            # 3. Calculate the "Collusive Displacement" (Anomaly Score)
-            avg_codisp += tree.codisp(self.point_index)
-            
-        avg_codisp /= NUM_TREES
-        self.point_index += 1
+        # Dispatch to all cores
+        for q in self.log_queues:
+            q.put(point)
 
-        # Increment and display the total number of lines processed
+        # Collect scores from all cores
+        total_score = 0
+        for q in self.result_queues:
+            total_score += q.get()
+            
+        avg_codisp = total_score / CORES_TO_USE
+
         self.total_lines_processed += 1
+        # Performance metric: print time every 1000 lines
+        if self.total_lines_processed % 1000 == 0:
+            elapsed_time = time.time() - self.time_start
+            print(f"\n[*] Time for last 1000 lines: {elapsed_time:.2f} seconds")
+            self.time_start = time.time() # Reset timer for the next batch
         print(f"[*] Lines Processed: {self.total_lines_processed}", end='\r')
         
+        
         # --- Alerting ---
-        # Only alert if the score is high AND the log is NOT an INFO log
         if self.alert and avg_codisp > THRESHOLD:
             if "INFO" not in log_line:
                 print(f"\n[!!!] ANOMALY DETECTED [!!!]")
@@ -64,7 +106,14 @@ class rrcf_model:
                 print(f"Log: {log_line.strip()}")
                 print(f"Pattern Template: {result['template_mined']}")
 
-                # Create a snapshot of the current log window to pass to the thread
-                log_snapshot = list(recent_logs_deque)
-                return log_snapshot
+                # log_snapshot = list(recent_logs_deque)
+                # return log_snapshot
+                
         return None
+        
+    def shutdown(self):
+        """Cleanly kill the background CPU cores"""
+        for q in self.log_queues:
+            q.put(None)
+        for p in self.workers:
+            p.join()
