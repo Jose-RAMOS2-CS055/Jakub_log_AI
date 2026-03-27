@@ -13,8 +13,9 @@ sys.setrecursionlimit(3000)
 SHINGLE_SIZE = 4       
 TREE_SIZE = 10000      # Bumped to 50,000 to remember weekly patterns
 NUM_TREES = 75         
-THRESHOLD = 95         
+THRESHOLD = 300         
 CORES_TO_USE = 18       # Number of background CPU cores to use
+ALERT_LOG_FILE = 'anomaly_alerts.log' # File to save alerts
 
 # ==========================================
 # 1. THE MULTIPROCESSING WORKER
@@ -105,6 +106,17 @@ class rrcf_model:
                 print(f"Score: {avg_codisp:.2f}")
                 print(f"Log: {log_line.strip()}")
                 print(f"Pattern Template: {result['template_mined']}")
+
+                # --- Write alert to a text file ---
+                try:
+                    with open(ALERT_LOG_FILE, 'a', encoding='utf-8') as f:
+                        f.write("="*50 + "\n")
+                        f.write(f"Timestamp: {time.ctime()}\n")
+                        f.write(f"Score: {avg_codisp:.2f}\n")
+                        f.write(f"Log: {log_line.strip()}\n")
+                        f.write(f"Pattern Template: {result['template_mined']}\n\n")
+                except Exception as e:
+                    print(f"\n[!] Error writing alert to file: {e}")
 
                 # log_snapshot = list(recent_logs_deque)
                 # return log_snapshot
