@@ -9,7 +9,7 @@ JP_log_AI is a robust and scalable system designed for real-time anomaly detecti
 -   **Real-time Log Ingestion**: Listens for incoming log streams over TCP.
 -   **Log Parsing with Drain3**: Automatically extracts log templates and identifies event IDs for structured analysis.
 -   **Anomaly Detection with RRCF**: Utilizes the Robust Random Cut Forest (RRCF) algorithm to detect deviations from normal log patterns.
--   **LLM-powered Root Cause Analysis**: When an anomaly is detected, the last 10 log lines are sent to a local LLM (Qwen/Qwen2.5-1.5B-Instruct) for immediate root cause analysis.
+-   **LLM-powered Root Cause Analysis**: When an anomaly is detected, the last 10 log lines are sent to a local LLM (Qwen/Qwen2.5-1.5B-Instruct) for immediate root cause analysis. Turned off for performance reasons.
 -   **Multithreaded Architecture**: Employs a producer-consumer pattern with multiple threads for efficient, non-blocking processing of log ingestion, anomaly detection, and LLM analysis.
 -   **Google Chat Integration**: Sends anomaly alerts and LLM analysis directly to a configured Google Chat space.
 -   **Warm-up Phase**: Initializes the anomaly detection model with historical log data to establish a baseline.
