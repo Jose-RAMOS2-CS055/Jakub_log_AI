@@ -41,6 +41,7 @@ for _ in range(NUM_TREES):
 
 # State trackers for the sliding windows
 shingle_deque = deque(maxlen=SHINGLE_SIZE)
+recent_logs_deque = deque(maxlen=10)
 point_index = 0
 total_lines_processed = 0
 
@@ -52,9 +53,33 @@ llm_instance = llm()
 # ==========================================
 # 3. THE REAL-TIME LISTENER & PROCESSOR
 # ==========================================
+def call_llm_for_analysis(log_window):
+    """
+    Takes a window of logs, sends them to the LLM for analysis, and prints the result.
+    Designed to be run in a separate thread to not block the main processing loop.
+    """
+    print("\n[+] Anomaly confirmed. Sending to LLM for root cause analysis...")
+    
+    # The deque is passed as a list, convert it to a newline-separated string
+    log_context = "\n".join(log_window)
+    
+    # Call the LLM
+    try:
+        analysis = llm_instance.generate_message_return(log_context)
+        
+        # Print the analysis
+        print("\n================ LLM ANALYSIS ================")
+        print(analysis)
+        print("============================================\n")
+    except Exception as e:
+        print(f"\n[!!!] Error during LLM analysis: {e}")
+
 def process_log_line(log_line):
     global point_index, total_lines_processed
     
+    # Add the raw log line to our recent history
+    recent_logs_deque.append(log_line.strip())
+
     # Increment and display the total number of lines processed
     total_lines_processed += 1
     print(f"[*] Lines Processed: {total_lines_processed}", end='\r')
@@ -96,7 +121,12 @@ def process_log_line(log_line):
             print(f"\n[!!!] ANOMALY DETECTED [!!!]")
             print(f"Score: {avg_codisp:.2f}")
             print(f"Log: {log_line.strip()}")
-            print(f"Pattern Template: {result['template_mined']}\n")
+            print(f"Pattern Template: {result['template_mined']}")
+
+            # --- E. Send to LLM in a separate thread ---
+            # Create a snapshot of the current log window to pass to the thread
+            log_snapshot = list(recent_logs_deque)
+            llm_analysis_queue.put(log_snapshot)
 
 # ==========================================
 # PHASE 1: WARM-UP (Limited to 3,000 lines)
@@ -125,6 +155,7 @@ except FileNotFoundError:
 # ==========================================
 ALERTING_ENABLED = True # Turn on the alarms!
 log_queue = Queue()
+llm_analysis_queue = Queue()
 
 def client_handler(conn, addr):
     """Handles an individual client connection, putting logs into a queue."""
@@ -156,12 +187,23 @@ def log_processor_worker():
         process_log_line(line)
         log_queue.task_done()
 
+def llm_analysis_worker():
+    """Worker thread to process LLM analysis requests sequentially from a queue."""
+    while True:
+        log_window = llm_analysis_queue.get() # This will block until a request is available
+        call_llm_for_analysis(log_window)
+        llm_analysis_queue.task_done()
+
 print(f"[*] Starting Phase 2: Listening for live TCP streams on port {PORT}...")
 
 try:
     # Start the dedicated log processing thread
     processor_thread = threading.Thread(target=log_processor_worker, daemon=True)
     processor_thread.start()
+
+    # Start the dedicated LLM analysis thread
+    llm_worker_thread = threading.Thread(target=llm_analysis_worker, daemon=True)
+    llm_worker_thread.start()
     
     # Setup the TCP Socket Server
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

@@ -20,12 +20,23 @@ class llm:
             trust_remote_code=False
         )
         
-    def generate_message_return(self, input_text, k=200):
+    def generate_message_return(self, logs, k=200):
         """
         Same as generate_message but returns instead of yielding.
         """
+        
+        prompt = f"""Act as an SRE. I am pasting 50 lines of logs below. The very last line is the anomaly; the preceding 49 lines are context. Analyze this sequence and reply strictly in this format. Your entire response must be under 50 words.
 
-        messages = [{"role": "user", "content": input_text}]
+Format:
+1. What: Brief summary.
+2. Why: Root cause/evidence.
+3. Next: Immediate triage action.
+
+Logs:
+{logs}
+"""
+
+        messages = [{"role": "user", "content": prompt}]
 
         text_prompt = self.tokenizer.apply_chat_template(
             messages, 
