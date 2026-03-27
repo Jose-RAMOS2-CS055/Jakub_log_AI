@@ -7,6 +7,8 @@ from collections import deque
 import threading
 from queue import Queue
 import sys
+from llm import llm
+import os
 sys.setrecursionlimit(10000) # Increases the limit from the default 1000
 
 # ==========================================
@@ -19,10 +21,12 @@ TREE_SIZE = 3000        # How many points the RRCF remembers (sliding window for
 NUM_TREES = 20         # Number of trees in the forest (utilizes your CPU cores)
 THRESHOLD = 95         # Anomaly score threshold (tune this over time)
 ALERTING_ENABLED = False
+HISTORICAL_FILE = r"examples\REN-SWEET400-a8n.log"
+MAX_WARMUP_LINES = 3000
 
 # ==========================================
 
-# 2. INITIALIZE DRAIN3 & RRCF
+# 2. INITIALIZE DRAIN3 & RRCF & LLM
 # ==========================================
 # Setup Drain3 (Parser)
 config = TemplateMinerConfig()
@@ -42,6 +46,8 @@ total_lines_processed = 0
 
 print(f"[*] Starting Anomaly Detection Engine...")
 print(f"[*] Listening for TCP log streams on port {PORT}...")
+print(f"Now loading the LLM model...")
+llm_instance = llm()
 
 # ==========================================
 # 3. THE REAL-TIME LISTENER & PROCESSOR
@@ -93,10 +99,8 @@ def process_log_line(log_line):
             print(f"Pattern Template: {result['template_mined']}\n")
 
 # ==========================================
-# PHASE 1: WARM-UP (Limited to 10,000 lines)
+# PHASE 1: WARM-UP (Limited to 3,000 lines)
 # ==========================================
-HISTORICAL_FILE = r"examples\REN-SWEET400-a8n.log" # Make sure this matches your file name
-MAX_WARMUP_LINES = 3000
 
 print(f"[*] Starting Phase 1: Warming up model with the first {MAX_WARMUP_LINES} lines from {HISTORICAL_FILE}...")
 
@@ -161,16 +165,24 @@ try:
     
     # Setup the TCP Socket Server
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        # Allow port reuse so it doesn't crash if you restart the script quickly
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) 
         s.bind((HOST, PORT))
         s.listen()
+        
+        # THE FIX: Set a 1-second timeout so s.accept() doesn't trap the thread forever
+        s.settimeout(1.0) 
+        
         while True:
-            conn, addr = s.accept()
-            # For each new connection, start a new thread to handle it
-            client_thread = threading.Thread(target=client_handler, args=(conn, addr), daemon=True)
-            client_thread.start()
+            try:
+                conn, addr = s.accept()
+                client_thread = threading.Thread(target=client_handler, args=(conn, addr), daemon=True)
+                client_thread.start()
+            except socket.timeout:
+                # If no connection happens in 1 second, it throws a timeout.
+                # We catch it and 'continue' the loop. 
+                # This tiny interruption allows Python to "hear" your Ctrl+C!
+                continue 
+
 except KeyboardInterrupt:
-    print("\n[*] Shutdown signal received. Cleaning up...")
-    log_queue.put(None) # Signal the processor thread to exit
-    processor_thread.join() # Wait for the processor thread to finish gracefully
+    print("\n[*] Ctrl+C received. Instantly killing the process...")
+    os._exit(0)

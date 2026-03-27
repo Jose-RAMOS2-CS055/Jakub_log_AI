@@ -7,7 +7,7 @@ import time
 HOST = '127.0.0.1'
 PORT = 1010
 FILE_PATH = r'examples\REN-SWEET400-a8n_260120.log'  # <-- CHANGE THIS TO YOUR .TXT FILE NAME
-DELAY = 0.001                  # Seconds to wait between sending each line
+DELAY = 0.01                  # Seconds to wait between sending each line
 
 def stream_logs_from_file():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
