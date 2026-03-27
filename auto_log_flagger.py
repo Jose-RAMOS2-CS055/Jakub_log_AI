@@ -1,6 +1,6 @@
 import socket
 from ML.rrcf import rrcf_model
-import numpy as np
+from google_chat_api.google_chat_api import google_chat_api
 from collections import deque
 import threading
 from queue import Queue
@@ -39,6 +39,15 @@ def call_llm_for_analysis(log_window):
         print("\n================ LLM ANALYSIS ================")
         print(analysis)
         print("============================================\n")
+        full_analysis = f"""================ LLM ANALYSIS ================
+{analysis}
+============================================
+================ LOGS ================
+{log_context}"""
+        
+        
+        google_chat_websocket.send_message(full_analysis)
+        
     except Exception as e:
         print(f"\n[!!!] Error during LLM analysis: {e}")
 
@@ -129,6 +138,7 @@ print(f"Now loading the LLM model...")
 llm_instance = llm()
 drain_instance = drain3()
 ML_instance = rrcf_model()
+google_chat_websocket = google_chat_api()
 warm_up()
 print(f"[*] Starting Phase 2: Listening for live TCP streams on port {PORT}...")
 

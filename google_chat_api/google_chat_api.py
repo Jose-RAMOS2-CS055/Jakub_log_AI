@@ -24,7 +24,7 @@ class google_chat_api:
                     "cardId": "jira_notification_01",
                     "card": {
                         "header": {
-                            "title": "New request created",
+                            "title": "ANOMALY DETECTED!!!",
                         },
                         "sections": [
                             {
