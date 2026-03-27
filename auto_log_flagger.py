@@ -1,56 +1,49 @@
-import socket
 from ML.rrcf import rrcf_model
 from google_chat_api.google_chat_api import google_chat_api
-from collections import deque
-import threading
-from queue import Queue
-import sys
 from LLM.llm import llm
 from Drain3.drain3 import drain3
+from collections import deque
+from queue import Queue
+import socket
+import threading
+import sys
 import os
+# ==========================================
+# SYSTEM CONFIGURATION
+# ==========================================
 sys.setrecursionlimit(3000) # Increases the limit from the default 1000
 
-# ==========================================
-# 1. SYSTEM CONFIGURATION
-# ==========================================
-HOST = '0.0.0.0'       # Listen on all network interfaces
-PORT = 1010            # The port you requested
+HOST = '127.0.0.1'
+PORT = 1010
 HISTORICAL_FILE = r"examples\REN-SWEET400-a8n.log"
-MAX_WARMUP_LINES = 3000
+MAX_WARMUP_LINES = 100000
 
 # ==========================================
-# 3. THE REAL-TIME LISTENER & PROCESSOR
+# LLM ANALYSIS AND GOOGLE CHAT MESSAGE
 # ==========================================
 def call_llm_for_analysis(log_window):
     """
     Takes a window of logs, sends them to the LLM for analysis, and prints the result.
     Designed to be run in a separate thread to not block the main processing loop.
     """
-    print("\n[+] Anomaly confirmed. Sending to LLM for root cause analysis...")
-    
-    # The deque is passed as a list, convert it to a newline-separated string
     log_context = "\n".join(log_window)
     
-    # Call the LLM
     try:
         analysis = llm_instance.generate_message_return(log_context)
-        
-        # Print the analysis
-        print("\n================ LLM ANALYSIS ================")
-        print(analysis)
-        print("============================================\n")
         full_analysis = f"""================ LLM ANALYSIS ================
 {analysis}
 ============================================
 ================ LOGS ================
 {log_context}"""
         
-        
         google_chat_websocket.send_message(full_analysis)
         
     except Exception as e:
         print(f"\n[!!!] Error during LLM analysis: {e}")
 
+# ==========================================
+# LOG PROCESSING
+# ==========================================
 def process_log_line(log_line):
     # Add the raw log line to our recent history
     recent_logs_deque.append(log_line.strip())
@@ -58,18 +51,16 @@ def process_log_line(log_line):
     # --- A. Parse the Log ---
     result, event_id = drain_instance.refactor_logs(log_line) 
     
-    # --- B. Vectorize (Create a Shingle) ---
-    # We group the last N events together to catch sequential anomalies
+    # --- B. Calculate anomaly score ---
     log_snapshot = ML_instance.calculate_anomaly(log_line, result, event_id, recent_logs_deque)
     
+    # --- C. Send anomaly report to LLM ---
     if log_snapshot:
         llm_analysis_queue.put(log_snapshot)
 
 # ==========================================
-# PHASE 1: WARM-UP (Limited to 3,000 lines)
+# MODEL WARM-UP (Limited to 3,000 lines)
 # ==========================================
-
-
 def warm_up():
     print(f"[*] Starting Phase 1: Warming up model with the first {MAX_WARMUP_LINES} lines from {HISTORICAL_FILE}...")
     try:
@@ -88,7 +79,9 @@ def warm_up():
     except FileNotFoundError:
         print(f"[!] Historical file not found. Skipping warm-up.")
 
-
+# ==========================================
+# PORT LOG HANDLER
+# ==========================================
 def client_handler(conn, addr):
     """Handles an individual client connection, putting logs into a queue."""
     print(f"\n[*] Connection established from {addr}")
@@ -110,6 +103,9 @@ def client_handler(conn, addr):
                 break # Client disconnected abruptly
     print(f"[*] Connection closed from {addr}")
 
+# ==========================================
+# THREADS
+# ==========================================
 def log_processor_worker():
     """Worker thread to process logs from the queue."""
     while True:
@@ -127,17 +123,20 @@ def llm_analysis_worker():
         llm_analysis_queue.task_done()
 
 
-
-# 2. INITIALIZE DRAIN3 & RRCF & LLM
+# ==========================================
+# INITIALIZE DRAIN3, RRCF, LLM & GOOGLE CHAT
 # ==========================================
 recent_logs_deque = deque(maxlen=10)
 
 print(f"[*] Starting Anomaly Detection Engine...")
 print(f"[*] Listening for TCP log streams on port {PORT}...")
-print(f"Now loading the LLM model...")
-llm_instance = llm()
+print("Loading Drain3...")
 drain_instance = drain3()
+print("Loading RRCF...")
 ML_instance = rrcf_model()
+print("Loading LLM model...")
+llm_instance = llm()
+print("Loading Google Chat API...")
 google_chat_websocket = google_chat_api()
 warm_up()
 print(f"[*] Starting Phase 2: Listening for live TCP streams on port {PORT}...")
@@ -172,9 +171,6 @@ try:
                 client_thread = threading.Thread(target=client_handler, args=(conn, addr), daemon=True)
                 client_thread.start()
             except socket.timeout:
-                # If no connection happens in 1 second, it throws a timeout.
-                # We catch it and 'continue' the loop. 
-                # This tiny interruption allows Python to "hear" your Ctrl+C!
                 continue 
 
 except KeyboardInterrupt:

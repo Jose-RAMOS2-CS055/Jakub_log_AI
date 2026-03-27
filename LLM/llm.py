@@ -25,7 +25,7 @@ class llm:
         Same as generate_message but returns instead of yielding.
         """
         
-        prompt = f"""Act as an SRE. I am pasting 50 lines of logs below. The very last line is the anomaly; the preceding 49 lines are context. Analyze this sequence and reply strictly in this format. Your entire response must be under 50 words.
+        prompt = f"""Act as an SRE. I am pasting 10 lines of logs below. The very last line is the anomaly; the preceding 49 lines are context. Analyze this sequence and reply strictly in this format. Your entire response must be under 50 words.
 
 Format:
 1. What: Brief summary.

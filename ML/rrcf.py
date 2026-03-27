@@ -7,7 +7,7 @@ sys.setrecursionlimit(3000) # Increases the limit from the default 1000
 
 SHINGLE_SIZE = 4       # How many logs to look at in a sequence
 TREE_SIZE = 3000        # How many points the RRCF remembers (sliding window for drift)
-NUM_TREES = 20         # Number of trees in the forest (utilizes your CPU cores)
+NUM_TREES = 75         # Number of trees in the forest (utilizes your CPU cores)
 THRESHOLD = 95         # Anomaly score threshold (tune this over time)
 
 class rrcf_model:
@@ -34,7 +34,7 @@ class rrcf_model:
         # Convert sequence to a numeric point for the RRCF model
         point = np.array(self.shingle_deque, dtype=float)
 
-        # --- C. Score & Update the RRCF Trees ---
+        # --- Score & Update the RRCF Trees ---
         avg_codisp = 0
         for tree in self.forest:
             # 1. If the tree is full, "forget" the oldest point to handle concept drift over months
@@ -55,7 +55,7 @@ class rrcf_model:
         self.total_lines_processed += 1
         print(f"[*] Lines Processed: {self.total_lines_processed}", end='\r')
         
-        # --- D. Alerting ---
+        # --- Alerting ---
         # Only alert if the score is high AND the log is NOT an INFO log
         if self.alert and avg_codisp > THRESHOLD:
             if "INFO" not in log_line:
@@ -64,7 +64,6 @@ class rrcf_model:
                 print(f"Log: {log_line.strip()}")
                 print(f"Pattern Template: {result['template_mined']}")
 
-                # --- E. Send to LLM in a separate thread ---
                 # Create a snapshot of the current log window to pass to the thread
                 log_snapshot = list(recent_logs_deque)
                 return log_snapshot

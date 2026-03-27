@@ -5,7 +5,6 @@ class drain3:
     def __init__(self):
         # Setup Drain3 (Parser)
         config = TemplateMinerConfig()
-        config.load("") # Loads default configurations
         self.template_miner = TemplateMiner(config=config)
         
     def refactor_logs(self, log_line):
