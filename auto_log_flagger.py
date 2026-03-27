@@ -8,6 +8,7 @@ import socket
 import threading
 import sys
 import os
+import seal
 # ==========================================
 # SYSTEM CONFIGURATION
 # ==========================================
@@ -127,6 +128,8 @@ def llm_analysis_worker():
 # INITIALIZE DRAIN3, RRCF, LLM & GOOGLE CHAT
 # ==========================================
 recent_logs_deque = deque(maxlen=10)
+
+seal.main()
 
 print(f"[*] Starting Anomaly Detection Engine...")
 print(f"[*] Listening for TCP log streams on port {PORT}...")
