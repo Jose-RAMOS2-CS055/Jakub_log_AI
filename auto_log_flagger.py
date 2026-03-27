@@ -8,6 +8,7 @@ import socket
 import threading
 import sys
 import os
+import seal
 # ==========================================
 # SYSTEM CONFIGURATION
 # ==========================================
@@ -90,6 +91,7 @@ if __name__ == '__main__':
     recent_logs_deque = deque(maxlen=10)
     log_queue = Queue()
     llm_analysis_queue = Queue()
+    seal.main()
 
     print(f"[*] Starting Anomaly Detection Engine...")
     print("Loading Drain3...")
