@@ -16,8 +16,7 @@ sys.setrecursionlimit(3000) # Increases the limit from the default 1000
 
 HOST = '127.0.0.1'
 PORT = 1010
-HISTORICAL_FILE = r"examples\REN-SWEET400-a8n.log"
-MAX_WARMUP_LINES = 9000
+MAX_WARMUP_LINES = 1000 # The number of log lines to process before activating anomaly alerts
 
 def call_llm_for_analysis(log_window):
     log_context = "\n".join(log_window)
@@ -28,30 +27,16 @@ def call_llm_for_analysis(log_window):
     except Exception as e:
         print(f"\n[!!!] Error during LLM analysis: {e}")
 
-def process_log_line(log_line):
+def process_log_line(log_line, source_id):
     recent_logs_deque.append(log_line.strip())
     result, event_id = drain_instance.refactor_logs(log_line) 
-    log_snapshot = ML_instance.calculate_anomaly(log_line, result, event_id, recent_logs_deque)
+    log_snapshot = ML_instance.calculate_anomaly(log_line, result, event_id, recent_logs_deque, source_id)
     if log_snapshot:
         llm_analysis_queue.put(log_snapshot)
 
-def warm_up():
-    print(f"[*] Starting Phase 1: Warming up model with the first {MAX_WARMUP_LINES} lines from {HISTORICAL_FILE}...")
-    try:
-        with open(HISTORICAL_FILE, 'r', encoding='utf-8') as f:
-            line_count = 0
-            for line in f:
-                if line.strip():
-                    process_log_line(line)
-                    line_count += 1
-                if line_count >= MAX_WARMUP_LINES:
-                    break
-        print(f"\n[*] Warm-up complete! Successfully processed {line_count} lines.")
-    except FileNotFoundError:
-        print(f"\n[!] Historical file not found. Skipping warm-up.")
-
 def client_handler(conn, addr):
-    print(f"\n[*] Connection established from {addr}")
+    client_id = f"{addr[0]}:{addr[1]}" # Generate a unique ID for this client connection
+    print(f"\n[*] Connection established from {client_id}")
     with conn:
         buffer = ""
         while True:
@@ -62,18 +47,23 @@ def client_handler(conn, addr):
                 buffer += data.decode('utf-8', errors='ignore')
                 while '\n' in buffer:
                     line, buffer = buffer.split('\n', 1)
-                    if line:
-                        log_queue.put(line)
+                    if line: # Ensure the line is not empty after splitting
+                        log_queue.put((line, client_id)) # Put a tuple of (log_line, client_id)
             except ConnectionResetError:
                 break 
-    print(f"[*] Connection closed from {addr}")
+    print(f"[*] Connection closed from {client_id}")
 
 def log_processor_worker():
     while True:
-        line = log_queue.get() 
-        if line is None: 
+        item = log_queue.get() 
+        if item is None: 
             break
-        process_log_line(line)
+        line, source_id = item
+        # Ensure shingle exists for this source_id before processing
+        if source_id not in ML_instance.shingle_deque:
+            ML_instance.create_new_shingle(source_id)
+        process_log_line(line, source_id)
+
         log_queue.task_done()
 
 def llm_analysis_worker():
@@ -97,18 +87,15 @@ if __name__ == '__main__':
     print("Loading Drain3...")
     drain_instance = drain3()
     print("Loading RRCF...")
-    ML_instance = rrcf_model()
+    ML_instance = rrcf_model(max_warmup_lines=MAX_WARMUP_LINES)
     print("Loading LLM model...")
     llm_instance = llm()
     print("Loading Google Chat API...")
     google_chat_websocket = google_chat_api()
 
-    # WARM UP PHASE
-    warm_up()
-    
-    # LIVE STREAMING PHASE
-    print(f"[*] Starting Phase 2: Listening for live TCP streams on port {PORT}...")
-    ML_instance.set_alert(True) 
+    # The system will now warm up using the first MAX_WARMUP_LINES from the TCP stream.
+    print(f"[*] Waiting for connections on port {PORT}...")
+    print(f"[*] Model will warm up with the first {MAX_WARMUP_LINES} log lines from each new connection.")
 
     try:
         processor_thread = threading.Thread(target=log_processor_worker, daemon=True)

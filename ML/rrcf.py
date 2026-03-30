@@ -15,7 +15,7 @@ TREE_SIZE = 10000      # Bumped to 50,000 to remember weekly patterns
 NUM_TREES = 75         
 THRESHOLD = 300         
 CORES_TO_USE = 18       # Number of background CPU cores to use
-ALERT_LOG_FILE = 'anomaly_alerts.log' # File to save alerts
+ALERT_LOG_FILE = 'anomaly_alerts_' # File to save alerts
 
 # ==========================================
 # 1. THE MULTIPROCESSING WORKER
@@ -45,8 +45,9 @@ def rrcf_worker(log_queue, result_queue, num_trees, tree_size):
 # 2. YOUR REFACTORED CLASS
 # ==========================================
 class rrcf_model:
-    def __init__(self):
+    def __init__(self, max_warmup_lines):
         self.trees_per_core = NUM_TREES // CORES_TO_USE
+        self.max_warmup_lines = max_warmup_lines
         
         # IPC Queues
         self.log_queues = [mp.Queue() for _ in range(CORES_TO_USE)]
@@ -62,21 +63,44 @@ class rrcf_model:
             p.start()
             self.workers.append(p)
             
-        self.shingle_deque = deque(maxlen=SHINGLE_SIZE)
-        self.total_lines_processed = 0
-        self.alert = False
-        self.time_start = time.time()
+        self.shingle_deque = {}
+        self.warmup_status = {}
+        self.log_path = {}
+        self.known_shingles = [] # To track order for printing
         
-    def set_alert(self, alert):
-        self.alert = alert
+    def create_new_shingle(self, id):
+        self.shingle_deque[id] = deque(maxlen=SHINGLE_SIZE)
+        self.log_path[id] = ALERT_LOG_FILE + str(id).replace(":", "_") + '.log'
+        self.warmup_status[id] = {'lines_processed': 0, 'warmup_complete': False}
         
-    def calculate_anomaly(self, log_line, result, event_id, recent_logs_deque):
-        self.shingle_deque.append(event_id)
-        if len(self.shingle_deque) < SHINGLE_SIZE:
+    def calculate_anomaly(self, log_line, result, event_id, recent_logs_deque, shingle_id):
+        # --- Per-Client Warm-up Logic ---
+        status = self.warmup_status[shingle_id]
+        status['lines_processed'] += 1
+        if not status['warmup_complete']:
+            if status['lines_processed'] >= self.max_warmup_lines:
+                status['warmup_complete'] = True
+                print(f"\n[*] Warm-up complete for {shingle_id}. Live anomaly detection is now active for this client.")
+
+        # --- Consolidated Status Display ---
+        if shingle_id not in self.known_shingles:
+            self.known_shingles.append(shingle_id)
+
+        # Update the display periodically to avoid performance bottlenecks
+        if status['lines_processed'] % 10 == 0:
+            # ANSI escape code to clear screen and move cursor to top-left
+            print("\033[H\033[J", end="") 
+            print("--- Live Client Status ---")
+            for s_id in self.known_shingles:
+                s_status = self.warmup_status.get(s_id, {})
+                s_lines = s_status.get('lines_processed', 0)
+                print(f"[*] Client {s_id}: {s_lines} lines processed")
+        self.shingle_deque[shingle_id].append(event_id)
+        if len(self.shingle_deque[shingle_id]) < SHINGLE_SIZE:
             return None 
         
         # --- THE JITTER FIX ---
-        point = np.array(self.shingle_deque, dtype=float)
+        point = np.array(self.shingle_deque[shingle_id], dtype=float)
         point = point + np.random.uniform(low=-1e-5, high=1e-5, size=point.shape)
 
         # Dispatch to all cores
@@ -89,27 +113,18 @@ class rrcf_model:
             total_score += q.get()
             
         avg_codisp = total_score / CORES_TO_USE
-
-        self.total_lines_processed += 1
-        # Performance metric: print time every 1000 lines
-        if self.total_lines_processed % 1000 == 0:
-            elapsed_time = time.time() - self.time_start
-            print(f"\n[*] Time for last 1000 lines: {elapsed_time:.2f} seconds")
-            self.time_start = time.time() # Reset timer for the next batch
-        print(f"[*] Lines Processed: {self.total_lines_processed}", end='\r')
-        
         
         # --- Alerting ---
-        if self.alert and avg_codisp > THRESHOLD:
+        if status['warmup_complete'] and avg_codisp > THRESHOLD:
             if "INFO" not in log_line:
-                print(f"\n[!!!] ANOMALY DETECTED [!!!]")
-                print(f"Score: {avg_codisp:.2f}")
-                print(f"Log: {log_line.strip()}")
-                print(f"Pattern Template: {result['template_mined']}")
+                # print(f"\n[!!!] ANOMALY DETECTED [!!!]")
+                # print(f"Score: {avg_codisp:.2f}")
+                # print(f"Log: {log_line.strip()}")
+                # print(f"Pattern Template: {result['template_mined']}")
 
                 # --- Write alert to a text file ---
                 try:
-                    with open(ALERT_LOG_FILE, 'a', encoding='utf-8') as f:
+                    with open(self.log_path[shingle_id], 'a', encoding='utf-8') as f:
                         f.write("="*50 + "\n")
                         f.write(f"Timestamp: {time.ctime()}\n")
                         f.write(f"Score: {avg_codisp:.2f}\n")
@@ -118,8 +133,8 @@ class rrcf_model:
                 except Exception as e:
                     print(f"\n[!] Error writing alert to file: {e}")
 
-                # log_snapshot = list(recent_logs_deque)
-                # return log_snapshot
+                log_snapshot = list(recent_logs_deque)
+                return log_snapshot
                 
         return None
         
