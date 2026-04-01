@@ -47,7 +47,7 @@ def stream_logs_from_file():
                 print(f"\n[*] Warm-up complete.")
             except FileNotFoundError:
                 print(f"\n[!] Error: Could not find the warm-up file '{WARM_UP}'.")
-                return # Exit if warm-up file is not found
+                return
 
             # --- Phase 2: Main Log Streaming ---
             print(f"[*] Phase 2: Streaming all lines from '{FILE_PATH}'...")

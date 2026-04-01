@@ -35,7 +35,7 @@ def process_log_line(log_line, source_id):
         llm_analysis_queue.put(log_snapshot)
 
 def client_handler(conn, addr):
-    client_id = f"{addr[0]}:{addr[1]}" # Generate a unique ID for this client connection
+    client_id = f"{addr[0]}:{addr[1]}" # Generate a unique ID for client connections
     print(f"\n[*] Connection established from {client_id}")
     with conn:
         buffer = ""
@@ -47,8 +47,8 @@ def client_handler(conn, addr):
                 buffer += data.decode('utf-8', errors='ignore')
                 while '\n' in buffer:
                     line, buffer = buffer.split('\n', 1)
-                    if line: # Ensure the line is not empty after splitting
-                        log_queue.put((line, client_id)) # Put a tuple of (log_line, client_id)
+                    if line:
+                        log_queue.put((line, client_id))
             except ConnectionResetError:
                 break 
     print(f"[*] Connection closed from {client_id}")
@@ -59,7 +59,6 @@ def log_processor_worker():
         if item is None: 
             break
         line, source_id = item
-        # Ensure shingle exists for this source_id before processing
         if source_id not in ML_instance.shingle_deque:
             ML_instance.create_new_shingle(source_id)
         process_log_line(line, source_id)
@@ -77,7 +76,6 @@ def llm_analysis_worker():
 # MAIN EXECUTION (WINDOWS MULTIPROCESSING GUARD)
 # ==========================================
 if __name__ == '__main__':
-    # Initialize Queues FIRST so warm_up can use them
     recent_logs_deque = deque(maxlen=10)
     log_queue = Queue()
     llm_analysis_queue = Queue()

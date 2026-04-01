@@ -15,8 +15,8 @@ class llm:
         # We use bfloat16 to make the math slightly faster for Xeon's AVX-512 instructions.
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id, 
-            device_map="cpu",          # Force the model to load strictly into system RAM
-            torch_dtype=torch.bfloat16, # A CPU-friendly data type that saves space and speeds up math
+            device_map="cpu",
+            torch_dtype=torch.bfloat16,
             trust_remote_code=False
         )
         
@@ -57,5 +57,5 @@ Logs:
                 pad_token_id=self.tokenizer.eos_token_id # Prevents infinite generation warnings
             )
         
-        # Decode the generated token IDs, skipping the prompt part.
+        # Decode the generated token IDs.
         return self.tokenizer.decode(output_ids[0][model_inputs["input_ids"].shape[1]:], skip_special_tokens=True)

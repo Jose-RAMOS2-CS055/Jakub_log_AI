@@ -11,7 +11,7 @@ sys.setrecursionlimit(3000)
 # CONFIGURATION
 # ==========================================
 SHINGLE_SIZE = 4       
-TREE_SIZE = 10000      # Bumped to 50,000 to remember weekly patterns
+TREE_SIZE = 10000
 NUM_TREES = 75         
 THRESHOLD = 300         
 CORES_TO_USE = 18       # Number of background CPU cores to use
@@ -27,7 +27,7 @@ def rrcf_worker(log_queue, result_queue, num_trees, tree_size):
     
     while True:
         point = log_queue.get()
-        if point is None: # Poison pill to shut down
+        if point is None:
             break
             
         local_codisp = 0
@@ -42,18 +42,16 @@ def rrcf_worker(log_queue, result_queue, num_trees, tree_size):
         point_index += 1
 
 # ==========================================
-# 2. YOUR REFACTORED CLASS
+# 2. RRCF Model
 # ==========================================
 class rrcf_model:
     def __init__(self, max_warmup_lines):
         self.trees_per_core = NUM_TREES // CORES_TO_USE
         self.max_warmup_lines = max_warmup_lines
         
-        # IPC Queues
         self.log_queues = [mp.Queue() for _ in range(CORES_TO_USE)]
         self.result_queues = [mp.Queue() for _ in range(CORES_TO_USE)]
         
-        # Spin up background workers
         self.workers = []
         for i in range(CORES_TO_USE):
             p = mp.Process(
@@ -66,7 +64,7 @@ class rrcf_model:
         self.shingle_deque = {}
         self.warmup_status = {}
         self.log_path = {}
-        self.known_shingles = [] # To track order for printing
+        self.known_shingles = []
         
     def create_new_shingle(self, id):
         self.shingle_deque[id] = deque(maxlen=SHINGLE_SIZE)
@@ -82,24 +80,21 @@ class rrcf_model:
                 status['warmup_complete'] = True
                 print(f"\n[*] Warm-up complete for {shingle_id}. Live anomaly detection is now active for this client.")
 
-        # --- Consolidated Status Display ---
         if shingle_id not in self.known_shingles:
             self.known_shingles.append(shingle_id)
 
-        # Update the display periodically to avoid performance bottlenecks
         if status['lines_processed'] % 10 == 0:
-            # ANSI escape code to clear screen and move cursor to top-left
             print("\033[H\033[J", end="") 
             print("--- Live Client Status ---")
             for s_id in self.known_shingles:
                 s_status = self.warmup_status.get(s_id, {})
                 s_lines = s_status.get('lines_processed', 0)
                 print(f"[*] Client {s_id}: {s_lines} lines processed")
+                
         self.shingle_deque[shingle_id].append(event_id)
         if len(self.shingle_deque[shingle_id]) < SHINGLE_SIZE:
             return None 
         
-        # --- THE JITTER FIX ---
         point = np.array(self.shingle_deque[shingle_id], dtype=float)
         point = point + np.random.uniform(low=-1e-5, high=1e-5, size=point.shape)
 
